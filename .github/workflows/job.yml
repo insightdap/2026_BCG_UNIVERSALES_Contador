@@ -1,0 +1,35 @@
+name: Update README en horario
+
+on:
+  schedule:
+     - cron: '0 13-23 * * *'  # Minuto 0 cada 2 horas en dicho horario, horario en utc, +6:00
+     - cron: '0 0 * * *'  # Minuto 0 siguiente dia, 6 pm local
+#    - cron: '0 * * * *'     # Minuto 0, todos los dias, cada hora.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update README with current timestamp
+        run: |
+          export TZ=America/El_Salvador
+          TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
+          echo "Last Deployed: $TIMESTAMP" > time_file.md
+
+      - name: Commit and push if changed
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add time_file.md
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update TIME_FILE timestamp"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
