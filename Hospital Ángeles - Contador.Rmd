@@ -1,0 +1,531 @@
+---
+title: "Hospital Ángeles - Contador"
+author: "[2026]"
+output: 
+  flexdashboard::flex_dashboard:
+    logo: hosp_logo.png
+    orientation: rows
+    vertical_layout: scroll
+    theme:
+      bootswatch: united   #tema predeterminado
+      navbar-bg: "#c7cdde"  #Color barra de navegación
+    # css: estilo_contador.css
+
+---
+
+
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(dplyr)
+library(tibble) 
+library(forcats)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(scales)
+library(lubridate)
+library(readxl)
+library(highcharter)
+library(ggplot2)
+library(gtsummary)
+library(reactable)
+library(reactablefmtr)
+library(htmltools)
+library(htmlwidgets)
+library(plotly)
+library(crosstalk)
+library(bslib)
+library(sass)
+library(bsicons)
+library(googlesheets4)
+library(gargle)
+
+#Auth   ------------------------------------------------------
+try(gs4_auth(
+  path = secret_decrypt_json(
+    "gs4_encuestas_serviceaccount_enc.json",
+    key = "GS4_ENCUESTAS_KEY"
+  )
+))
+
+#Importación   --------------------------------------------------------
+data <- read_sheet("1nENmasEndrqqa3aBcASpMpbB3RPp1UxcfC0unWS98mA")
+principal <- read_sheet("1KX7OtyGvOR72StII-XS4gaJIK9Fl3kRP_msw0EtyaPY") %>% 
+  filter(company == "HOSPITAL ANGELES")
+
+ultima_actualizacion <- Sys.time()
+
+# principal <- principal %>%
+#   mutate(user_login = as.character(user_login),
+#          user_pass = as.character(user_pass))
+
+data <- data %>%
+  mutate(fecha = `Submitted at`- hours(6)) %>%
+  relocate(fecha, .after = `Submitted at`)
+
+principal <- principal %>% 
+  left_join(data,
+            by="ref", multiple = "first")
+
+principal <- principal %>% 
+  mutate(estado = case_when(!is.na(`Submission ID`) ~ "Completado",
+                            .default = "Pendiente"))
+
+respuestas_diario <- principal %>% 
+  mutate(dias = floor_date(fecha, "day")) %>% 
+  group_by(dias) %>% 
+  count() 
+
+#Temas personalizados  ----------------------------------------
+#Highcharts
+tema_general_hc <- hc_theme_merge(
+  hc_theme_elementary(),
+  hc_theme(
+    colors = c("#14213D","#E5E5E5","#FCA311","#298DB4","#29BEB4"),
+    chart = list(
+      backgroundColor = "#FFF",
+      style = list(
+          fontFamily = "Roboto",
+          color = "#000000"),
+      zoomType = "x"
+    ),
+    title = list(
+        align = "left",
+        style = list(
+          fontFamily = "Roboto",
+          color = "#000000",
+          fontWeight = "bold")
+    ),
+    subtitle = list(
+        align = "left",
+        style = list(
+          fontFamily = "Roboto",
+          color = "#000000",
+          fontWeight = "bold")
+    )
+  )
+)
+
+
+```
+
+
+Row {data-height=150}
+-----------------------------------------------------------------------
+
+
+### Value Boxes {.no-title}
+
+
+```{r Datos principales}
+
+# respuestas_totales <- count(principal[which(principal$estado=="Completado"),])
+
+respuestas_global <- principal %>% 
+  group_by(estado) %>% 
+  summarise(respuestas = n()) %>% 
+  mutate(prop = round(respuestas/sum(respuestas)*100,0))
+
+#Datos para MoE
+respuestas_totales <- count(principal[which(principal$estado=="Completado"),])
+
+margen_error_pct <- function(n, N = NULL, p = 0.5, nivel_conf = 0.95) {
+  z <- qnorm(1 - (1 - nivel_conf) / 2)
+  me <- z * sqrt((p * (1 - p)) / n)
+  
+  if (!is.null(N)) {
+    me <- me * sqrt((N - n) / (N - 1))
+  }
+  return(me * 100)
+}
+
+moe <- round(margen_error_pct( respuestas_totales, 
+                       N = nrow(principal)),digits = 2)
+
+layout_column_wrap(
+  width = 1/4,
+  height = 140,
+  gap = 5, #Espacio entre card de elementos en px
+  value_box(
+    h1("Población", style = "font-size: 18px; font-weight: bold; font-family: Roboto;"),
+    value = formatC(nrow(principal),big.mark = ","),
+    showcase = bs_icon("people-fill"),
+    theme = value_box_theme(bg = "#FFF", fg = "#29BEB4")),
+  value_box(
+    h1("Respuestas", style = "font-size: 18px; font-weight: bold; font-family: Roboto;"),
+    value = formatC(respuestas_global$respuestas[which(respuestas_global$estado=="Completado")],big.mark = ","),
+    showcase = bs_icon("person-fill-check"),
+    theme = value_box_theme(bg = "#FFF", fg = "#29BEB4")),
+  value_box(
+    h1("Avance", style = "font-size: 18px; font-weight: bold; font-family: Roboto;"),
+    value = paste(respuestas_global$prop[which(respuestas_global$estado=="Completado")],"%"),
+    showcase = bs_icon("stars"),
+    theme = value_box_theme(bg = "#FFF", fg = "#29BEB4")),
+  value_box(
+    h1("MoE 95%CL", style = "font-size: 18px; font-weight: bold; font-family: Roboto;"),
+    value = paste(moe$n,"%"),
+    showcase = bs_icon("clipboard-pulse"),
+    theme = value_box_theme(bg = "#FFF", fg = "#29BEB4"))
+)
+
+
+```
+
+
+Row {data-height=350}
+-----------------------------------------------------------------------
+
+
+```{r Respuestas diarias}
+
+layout_column_wrap(
+  width = 1,
+  height = 340,
+  card(
+  full_screen = TRUE,
+  card_body(
+    respuestas_diario %>% 
+      mutate(tiempo = dias %>% datetime_to_timestamp()) %>% 
+      hchart("spline", hcaes(x = tiempo, y = n), name = "Respuestas") %>%
+      hc_title(text = "Respuestas") %>%
+      hc_subtitle(text = "Tendencia diaria") %>% 
+      hc_xAxis(type = "datetime", labels = list(format = "{value:%d-%b}"), title = list(text = "")) %>% 
+      hc_yAxis(title = list(text = "Cantidad de Respuestas")) %>%
+      hc_plotOptions(spline = list(
+        lineWidth = 3,
+        # states = list(hover = list(lineWidth = 5)), #resalta la linea al pasar el mouse
+        marker = list(enabled = FALSE),
+        dataLabels=list(enabled=TRUE, format="{point.y:.0f}")
+      )) %>% 
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled = TRUE)
+  ))
+)
+
+
+```
+
+
+Row {data-height=350}
+-----------------------------------------------------------------------
+
+```{r Respuestas por Genero }
+
+layout_column_wrap(
+  width = NULL,
+  style = css(grid_template_columns = "1fr 2fr"),
+  height = 340,
+  card(
+    full_screen = TRUE,
+    card_body(
+      principal %>%
+      filter(estado=="Completado") %>% 
+      group_by(genero) %>%
+      count() %>% 
+      ungroup() %>% 
+      hchart(type="pie",hcaes(x=genero,y=n),name="Género") %>% 
+      hc_title(text="Respuestas por Género")%>%
+      # hc_subtitle(text="") %>%
+      hc_plotOptions(pie=list(
+        innerSize="55%",
+        tooltip=list(pointFormat="{point.y:,.0f} ({point.percentage:.0f}%)"),
+        dataLabels=list(enabled=TRUE,
+                        format="{point.name}</br>{point.y:,.0f} ({point.percentage:.0f}%)"))
+        )%>%
+      hc_yAxis(title=list(text=""))%>%
+      hc_xAxis(title=list(text=""))%>%
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled=TRUE)
+  )),
+  card(
+    full_screen = TRUE,
+    card_body(
+     principal %>%
+      filter(estado=="Completado") %>% 
+      group_by(floor_date(fecha, "day"),genero) %>%
+      count() %>% 
+      rename("dias"=1) %>% 
+      ungroup() %>% 
+      mutate(tiempo = dias %>% datetime_to_timestamp()) %>% 
+      hchart("spline", hcaes(x = tiempo, y = n, group = genero)) %>%
+      hc_title(text = "Respuestas por Género") %>%
+      hc_subtitle(text = "Tendencia diaria") %>% 
+      hc_xAxis(type = "datetime", labels = list(format = "{value:%d-%b}"), title = list(text = "")) %>% 
+      hc_yAxis(title = list(text = "Cantidad de Respuestas")) %>%
+      hc_plotOptions(spline = list(
+        lineWidth = 2,
+        states = list(hover = list(lineWidth = 5)), #resalta la linea al pasar el mouse
+        marker = list(enabled = FALSE),
+        dataLabels=list(enabled=TRUE, format="<span style='color:{series.color}'>{point.y:.0f}</span>"))
+        ) %>% 
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled = TRUE)
+
+  ))
+)
+
+```
+
+
+Row {data-height=350}
+-----------------------------------------------------------------------
+
+```{r Respuestas por Jerarquia }
+
+layout_column_wrap(
+  width = NULL,
+  style = css(grid_template_columns = "1fr 2fr"),
+  height = 340,
+  card(
+    full_screen = TRUE,
+    card_body(
+      principal %>%
+      filter(estado=="Completado") %>% 
+      group_by(nivel_jerarquico) %>%
+      count() %>% 
+      ungroup() %>% 
+      hchart(type="pie",hcaes(x=nivel_jerarquico,y=n),name="Nivel Jerárquico") %>% 
+      hc_title(text="Respuestas por Nivel Jerárquico")%>%
+      # hc_subtitle(text="") %>%
+      hc_plotOptions(pie=list(
+        innerSize="55%",
+        tooltip=list(pointFormat="{point.y:,.0f} ({point.percentage:.0f}%)"),
+        dataLabels=list(enabled=TRUE,
+                        format="{point.name}</br>{point.y:,.0f} ({point.percentage:.0f}%)"))
+        )%>%
+      hc_yAxis(title=list(text=""))%>%
+      hc_xAxis(title=list(text=""))%>%
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled=TRUE)
+  )),
+  card(
+    full_screen = TRUE,
+    card_body(
+     principal %>%
+      filter(estado=="Completado") %>% 
+      group_by(floor_date(fecha, "day"),nivel_jerarquico) %>%
+      count() %>% 
+      rename("dias"=1) %>% 
+      ungroup() %>% 
+      mutate(tiempo = dias %>% datetime_to_timestamp()) %>% 
+      hchart("spline", hcaes(x = tiempo, y = n, group = nivel_jerarquico)) %>%
+      hc_title(text = "Respuestas por Nivel Jerárquico") %>%
+      hc_subtitle(text = "Tendencia diaria") %>% 
+      hc_xAxis(type = "datetime", labels = list(format = "{value:%d-%b}"), title = list(text = "")) %>% 
+      hc_yAxis(title = list(text = "Cantidad de Respuestas")) %>%
+      hc_plotOptions(spline = list(
+        lineWidth = 2,
+        states = list(hover = list(lineWidth = 5)), #resalta la linea al pasar el mouse
+        marker = list(enabled = FALSE),
+        dataLabels=list(enabled=TRUE, format="<span style='color:{series.color}'>{point.y:.0f}</span>"))
+        ) %>% 
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled = TRUE)
+
+  ))
+)
+
+```
+
+
+Row {data-height=350}
+-----------------------------------------------------------------------
+
+```{r Respuestas por Tiempo Laboral}
+
+layout_column_wrap(
+  width = NULL,
+  style = css(grid_template_columns = "1fr 2fr"),
+  height = 340,
+  card(
+    full_screen = TRUE,
+    card_body(
+      principal %>%
+      filter(estado=="Completado") %>% 
+      group_by(tiempo_laboral) %>%
+      count() %>% 
+      ungroup() %>% 
+      hchart(type="pie",hcaes(x=tiempo_laboral,y=n),name="Tiempo de Trabajo") %>% 
+      hc_title(text="Respuestas por Tiempo de Trabajo")%>%
+      # hc_subtitle(text="") %>%
+      hc_plotOptions(pie=list(
+        innerSize="55%",
+        tooltip=list(pointFormat="{point.y:,.0f} ({point.percentage:.0f}%)"),
+        dataLabels=list(enabled=TRUE,
+                        format="{point.name}</br>{point.y:,.0f} ({point.percentage:.0f}%)"))
+        )%>%
+      hc_yAxis(title=list(text=""))%>%
+      hc_xAxis(title=list(text=""))%>%
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled=TRUE)
+  )),
+  card(
+    full_screen = TRUE,
+    card_body(
+     principal %>%
+      filter(estado=="Completado") %>% 
+      group_by(floor_date(fecha, "day"),tiempo_laboral) %>%
+      count() %>% 
+      rename("dias"=1) %>% 
+      ungroup() %>% 
+      mutate(tiempo = dias %>% datetime_to_timestamp()) %>% 
+      hchart("spline", hcaes(x = tiempo, y = n, group = tiempo_laboral)) %>%
+      hc_title(text = "Respuestas por Tiempo de Trabajo") %>%
+      hc_subtitle(text = "Tendencia diaria") %>% 
+      hc_xAxis(type = "datetime", labels = list(format = "{value:%d-%b}"), title = list(text = "")) %>% 
+      hc_yAxis(title = list(text = "Cantidad de Respuestas")) %>%
+      hc_plotOptions(spline = list(
+        lineWidth = 2,
+        states = list(hover = list(lineWidth = 5)), #resalta la linea al pasar el mouse
+        marker = list(enabled = FALSE),
+        dataLabels=list(enabled=TRUE, format="<span style='color:{series.color}'>{point.y:.0f}</span>"))
+        ) %>% 
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled = TRUE)
+
+  ))
+)
+
+```
+
+
+Row {data-height=350}
+-----------------------------------------------------------------------
+
+```{r Respuestas por Generacion}
+
+layout_column_wrap(
+  width = NULL,
+  style = css(grid_template_columns = "1fr 2fr"),
+  height = 340,
+  card(
+    full_screen = TRUE,
+    card_body(
+      principal %>%
+      filter(estado=="Completado") %>% 
+      group_by(generacion) %>%
+      count() %>% 
+      ungroup() %>% 
+      hchart(type="pie",hcaes(x=generacion,y=n),name="Generación") %>% 
+      hc_title(text="Respuestas por Generación")%>%
+      # hc_subtitle(text="") %>%
+      hc_plotOptions(pie=list(
+        innerSize="55%",
+        tooltip=list(pointFormat="{point.y:,.0f} ({point.percentage:.0f}%)"),
+        dataLabels=list(enabled=TRUE,
+                        format="{point.name}</br>{point.y:,.0f} ({point.percentage:.0f}%)"))
+        )%>%
+      hc_yAxis(title=list(text=""))%>%
+      hc_xAxis(title=list(text=""))%>%
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled=TRUE)
+  )),
+  card(
+    full_screen = TRUE,
+    card_body(
+     principal %>%
+      filter(estado=="Completado") %>% 
+      group_by(floor_date(fecha, "day"),generacion) %>%
+      count() %>% 
+      rename("dias"=1) %>% 
+      ungroup() %>% 
+      mutate(tiempo = dias %>% datetime_to_timestamp()) %>% 
+      hchart("spline", hcaes(x = tiempo, y = n, group = generacion)) %>%
+      hc_title(text = "Respuestas por Generación") %>%
+      hc_subtitle(text = "Tendencia diaria") %>% 
+      hc_xAxis(type = "datetime", labels = list(format = "{value:%d-%b}"), title = list(text = "")) %>% 
+      hc_yAxis(title = list(text = "Cantidad de Respuestas")) %>%
+      hc_plotOptions(spline = list(
+        lineWidth = 2,
+        states = list(hover = list(lineWidth = 5)), #resalta la linea al pasar el mouse
+        marker = list(enabled = FALSE),
+        dataLabels=list(enabled=TRUE, format="<span style='color:{series.color}'>{point.y:.0f}</span>"))
+        ) %>% 
+      hc_add_theme(tema_general_hc) %>% 
+      hc_exporting(enabled = TRUE)
+
+  ))
+)
+
+```
+
+
+Row {data-height=450}
+-----------------------------------------------------------------------
+
+
+```{r Avance por Area}
+
+contador_area <- principal %>% 
+  filter(!is.na(area1)) %>% # Evitar vacios
+  group_by(area1,estado) %>% 
+  summarise(respuestas = n()) %>% 
+  mutate(prop = round(respuestas/sum(respuestas)*100,0)) %>%
+  pivot_wider(names_from = estado, values_from = c(respuestas,prop), values_fill = 0) %>% 
+  mutate(total_respuestas = rowSums(across(starts_with("respuestas"))),
+         total_prop = rowSums(across(starts_with("prop"))))
+
+
+layout_column_wrap(
+  width = 1,
+  height = 440,
+  card(
+  full_screen = TRUE,
+  card_body(
+   contador_area %>% 
+    hchart("bar", hcaes(x = area1, y = total_prop, z = total_respuestas), name = "Población", showInLegend = TRUE,
+           borderRadius = 10,
+           dataLabels=list(enabled=TRUE, format="{point.z:.0f}")) %>%
+    hc_add_series(type = "bar",data = contador_area,hcaes(x = area1, y = prop_Completado, z = respuestas_Completado),
+                  name = "Completado", color = "#29BEB4",showInLegend = TRUE,
+                  borderRadius = 10,
+                  dataLabels=list(enabled=TRUE, format="<span style='color:{series.color}'>{point.z:.0f} ({point.y:.0f}%)</span>")) %>%
+    hc_title(text = "Avance de Respuestas por Área") %>%
+    # hc_subtitle(text = "Frecuencias por Nivel de Respuesta") %>%
+    hc_xAxis(title = list(text = "")) %>% 
+    hc_yAxis(title = list(text = "Porcentaje"),ceiling = 100, labels = list(format = "{text}%")) %>%
+    hc_colors(c("#EBEBEB"))%>%
+    hc_plotOptions(bar=list(
+      grouping = FALSE, 
+      # pointPadding = 0,      # SUPERPOSICIÓN TOTAL
+      pointPlacement = 0    # MISMA POSICIÓN EXACTA
+      # groupPadding = 0,      # MISMO GRUPO (sin separación)
+    )) %>%
+    hc_tooltip(pointFormat = "<span style='color:{point.color}'>●</span> {series.name}: <b>{point.z:.0f}
+               ({point.y:.0f}%)") %>% 
+    hc_scrollbar(enabled = TRUE) %>% 
+    hc_add_theme(tema_general_hc) %>% 
+    hc_exporting(enabled = TRUE)
+  ))
+)
+
+```
+
+
+Row {data-height=12}
+-----------------------------------------------------------------------
+
+<div style="display:flex; justify-content:space-between; align-items:center;
+            width:100%; margin-top:4px; margin-bottom:4px;">
+
+  <!-- Izquierda -->
+  <p style="background:transparent; padding:4px; border-radius:6px;
+            font-size:10px; color:#003366; margin:0;">
+    Powered by 
+    <a href="https://insightdap.com/" target="_blank"
+       style="color:#003366; font-weight:bold; text-decoration:none;">
+      Insight Data Analytics Partners®
+    </a>
+  </p>
+
+  <!-- Derecha -->
+  <p style="background:transparent; padding:4px; border-radius:6px;
+            font-size:10px; color:#003366; margin:0; text-align:right;">
+    <b>Última actualización:</b>
+   `r format(ultima_actualizacion, "%d-%m-%Y %H:%M",tz = "America/El_Salvador")`
+  </p>
+
+</div>
+
+
