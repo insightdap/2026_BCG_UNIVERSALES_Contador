@@ -3,7 +3,7 @@ title: "Hospital Ángeles - Contador"
 author: "[2026]"
 output: 
   flexdashboard::flex_dashboard:
-    logo: hosp_logo.png
+    logo: hosp_logo.PNG
     orientation: rows
     vertical_layout: scroll
     theme:
